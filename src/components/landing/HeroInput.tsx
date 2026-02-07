@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
+import { runHedgiSnapshot } from "@/lib/pipeline/snapshotPipeline";
 
 const exampleBusinesses = [
   "I run a small farm in Iowa growing corn and soybeans. Drought and commodity prices significantly affect my revenue.",
@@ -14,16 +15,26 @@ const exampleBusinesses = [
 export function HeroInput() {
   const [businessDescription, setBusinessDescription] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const handleAnalyze = async () => {
     if (!businessDescription.trim()) return;
-    
+
     setIsAnalyzing(true);
-    
-    // Store the business description and navigate to results
-    sessionStorage.setItem("hedgi_business", businessDescription);
-    navigate("/results");
+    setError(null);
+
+    try {
+      const snapshot = await runHedgiSnapshot(businessDescription);
+      sessionStorage.setItem("hedgi_business", businessDescription);
+      sessionStorage.setItem("hedgi_snapshot", JSON.stringify(snapshot));
+      navigate("/results");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "We could not reach the AI service.";
+      setError(message);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const handleExampleClick = (example: string) => {
@@ -85,9 +96,13 @@ export function HeroInput() {
         transition={{ delay: 0.5 }}
         className="mt-8"
       >
-        <p className="text-sm text-muted-foreground text-center mb-4">
-          Try an example:
-        </p>
+        {error ? (
+          <p className="text-sm text-destructive text-center mb-4">{error}</p>
+        ) : (
+          <p className="text-sm text-muted-foreground text-center mb-4">
+            Try an example:
+          </p>
+        )}
         <div className="flex flex-wrap justify-center gap-2">
           {exampleBusinesses.map((example, index) => (
             <button

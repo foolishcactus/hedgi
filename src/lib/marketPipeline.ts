@@ -8,6 +8,7 @@ import type {
 } from "@/types/hedgi";
 import { CATEGORY_DEFINITIONS, inferCategoriesFromProfile } from "@/lib/categories";
 import { fetchActiveMarketsByCategories as fetchKalshiMarkets } from "@/lib/providers/kalshi.mock";
+import { fetchKalshiMarketsReal } from "@/lib/providers/kalshi.real";
 import { fetchActiveMarketsByCategories as fetchPolymarketMarkets } from "@/lib/providers/polymarket.mock";
 import { daysUntil } from "@/lib/format";
 
@@ -361,12 +362,18 @@ export const buildRankedSignals = async (input: string): Promise<RankedSignal[]>
   const categoryMatches = inferCategoriesFromProfile(profile);
   const topCategories = categoryMatches.slice(0, 3).map((match) => match.id);
 
-  const [kalshiMarkets, polymarketMarkets] = await Promise.all([
-    fetchKalshiMarkets(topCategories),
-    fetchPolymarketMarkets(topCategories),
-  ]);
+  const useRealKalshi = import.meta.env.VITE_USE_REAL_KALSHI === "true";
+  const kalshiMarkets = useRealKalshi
+    ? await fetchKalshiMarketsReal(topCategories).catch(() => [])
+    : await fetchKalshiMarkets(topCategories);
+  const polymarketMarkets = await fetchPolymarketMarkets(topCategories);
 
-  const filteredMarkets = hygieneFilter([...kalshiMarkets, ...polymarketMarkets]);
+  const resolvedKalshiMarkets =
+    useRealKalshi && kalshiMarkets.length === 0
+      ? await fetchKalshiMarkets(topCategories)
+      : kalshiMarkets;
+
+  const filteredMarkets = hygieneFilter([...resolvedKalshiMarkets, ...polymarketMarkets]);
 
   const geminiRanked = await rankMarketsWithGemini(profile, filteredMarkets).catch(() => []);
   const geminiMap = new Map(geminiRanked.map((item) => [item.marketId, item]));

@@ -27,7 +27,6 @@ export type CategoryId =
   | "energy"
   | "logistics"
   | "tourism"
-  | "sports"
   | "finance"
   | "health"
   | "technology"

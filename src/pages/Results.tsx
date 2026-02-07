@@ -1,262 +1,160 @@
-import { useEffect, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
-import {
-  Building2,
-  AlertTriangle,
-  TrendingDown,
-  Shield,
-  Signal,
-  ArrowRight,
-  CheckCircle,
-  XCircle,
-  ChevronRight,
-} from "lucide-react";
+import { Building2, ChevronRight, Shield, Signal, Tag } from "lucide-react";
+import { runHedgiSnapshot, type SnapshotResult } from "@/lib/pipeline/snapshotPipeline";
+import { computeHedgeQuote } from "@/lib/hedgeCalculator";
 
-// Mock data - in production this would come from AI analysis
-const generateMockResults = (business: string) => {
-  const isAgricultural = business.toLowerCase().includes("farm") || business.toLowerCase().includes("crop");
-  const isWinterBusiness = business.toLowerCase().includes("ski") || business.toLowerCase().includes("snow");
-  const isEnergySensitive = business.toLowerCase().includes("gas") || business.toLowerCase().includes("fuel") || business.toLowerCase().includes("solar");
-
-  if (isAgricultural) {
-    return {
-      summary: "Your agricultural operation appears to be primarily exposed to weather volatility and commodity price fluctuations. As a grain producer in the Midwest, your revenue is closely tied to growing conditions and market prices for corn and soybeans.",
-      risks: [
-        { name: "Drought Conditions", severity: "high", impact: "Severe yield reduction, potential crop loss" },
-        { name: "Commodity Price Volatility", severity: "high", impact: "Revenue fluctuates with market prices" },
-        { name: "Extreme Weather Events", severity: "medium", impact: "Flooding, hail, early frost damage" },
-        { name: "Input Cost Increases", severity: "medium", impact: "Fertilizer, seed, and fuel cost spikes" },
-      ],
-      lossScenario: {
-        revenueAtRisk: "$180,000",
-        worstCase: "$320,000",
-        likelihood: "15-25%",
-        timeframe: "Growing season",
-      },
-      hedging: {
-        unprotected: "$320,000 potential loss",
-        protected: "$85,000 maximum exposure",
-        reduction: "73%",
-      },
-      signals: [
-        { name: "NOAA Drought Outlook", strength: "strong", description: "Direct weather prediction data" },
-        { name: "CBOT Corn Futures", strength: "strong", description: "Market price expectations" },
-        { name: "La Niña Probability", strength: "partial", description: "Seasonal weather patterns" },
-      ],
-    };
-  }
-
-  if (isWinterBusiness) {
-    return {
-      summary: "Your winter recreation business is highly sensitive to temperature and snowfall patterns. Climate variability poses significant operational risk, with warm winters directly impacting visitor numbers and season length.",
-      risks: [
-        { name: "Below-Average Snowfall", severity: "high", impact: "Shortened season, reduced visitors" },
-        { name: "Warm Temperature Anomalies", severity: "high", impact: "Poor snow conditions, early melt" },
-        { name: "Energy Costs", severity: "medium", impact: "Snowmaking and operations costs" },
-        { name: "Economic Downturn", severity: "low", impact: "Discretionary spending reduction" },
-      ],
-      lossScenario: {
-        revenueAtRisk: "$450,000",
-        worstCase: "$1,200,000",
-        likelihood: "20-30%",
-        timeframe: "Winter season",
-      },
-      hedging: {
-        unprotected: "$1,200,000 potential loss",
-        protected: "$280,000 maximum exposure",
-        reduction: "77%",
-      },
-      signals: [
-        { name: "NOAA Winter Outlook", strength: "strong", description: "Seasonal temperature forecasts" },
-        { name: "El Niño/La Niña Index", strength: "strong", description: "Winter weather patterns" },
-        { name: "Regional Snowpack Data", strength: "partial", description: "Historical comparison data" },
-      ],
-    };
-  }
-
-  // Default for other businesses
-  return {
-    summary: "Based on your business description, we've identified several external factors that could impact your revenue. Your operation appears sensitive to supply chain dynamics, energy costs, and broader economic conditions.",
-    risks: [
-      { name: "Supply Chain Disruption", severity: "medium", impact: "Inventory shortages, delivery delays" },
-      { name: "Energy Price Volatility", severity: "medium", impact: "Operating cost increases" },
-      { name: "Interest Rate Changes", severity: "low", impact: "Customer financing costs" },
-      { name: "Economic Slowdown", severity: "medium", impact: "Reduced customer demand" },
-    ],
-    lossScenario: {
-      revenueAtRisk: "$75,000",
-      worstCase: "$150,000",
-      likelihood: "10-20%",
-      timeframe: "12 months",
-    },
-    hedging: {
-      unprotected: "$150,000 potential loss",
-      protected: "$45,000 maximum exposure",
-      reduction: "70%",
-    },
-    signals: [
-      { name: "Consumer Sentiment Index", strength: "partial", description: "Demand indicator" },
-      { name: "WTI Crude Futures", strength: "strong", description: "Energy cost projection" },
-      { name: "Fed Rate Expectations", strength: "strong", description: "Interest rate outlook" },
-    ],
-  };
-};
-
-const getSeverityColor = (severity: string) => {
-  switch (severity) {
-    case "high": return "text-destructive bg-destructive/10";
-    case "medium": return "text-warning bg-warning/10";
-    case "low": return "text-success bg-success/10";
-    default: return "text-muted-foreground bg-muted";
+const getErrorMessage = (code: string) => {
+  switch (code) {
+    case "missing_api_key":
+      return "Missing GEMINI_API_KEY. Add it to your .env and restart the backend server.";
+    case "missing_business":
+      return "No business description was sent. Please go back and try again.";
+    case "missing_business_description":
+      return "No business description was sent. Please go back and try again.";
+    case "empty_keyword_response":
+      return "The AI service returned an empty keyword response. Please try again.";
+    case "empty_score_response":
+      return "The AI service returned an empty scoring response. Please try again.";
+    default:
+      return "We could not reach the AI service. Please check the API server and try again.";
   }
 };
 
-const getSignalColor = (strength: string) => {
-  switch (strength) {
-    case "strong": return "text-success";
-    case "partial": return "text-warning";
-    case "weak": return "text-muted-foreground";
-    default: return "text-muted-foreground";
+const formatScore = (value: number) => `${value.toFixed(1)}/10`;
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+
+const getFallbackYesPrice = (seed: string) => {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) % 1000;
   }
+  const normalized = (hash % 80) / 100 + 0.1; // 0.10 - 0.89
+  return Number(normalized.toFixed(2));
 };
 
 export default function Results() {
   const navigate = useNavigate();
-  const [business, setBusiness] = useState("");
-  const [results, setResults] = useState<ReturnType<typeof generateMockResults> | null>(null);
+  const [snapshot, setSnapshot] = useState<SnapshotResult | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const getErrorMessage = (code: string, status?: number) => {
-    switch (code) {
-      case "missing_api_key":
-        return "Missing Gemini API key. Add GEMINI_API_KEY to your .env and restart the API server.";
-      case "missing_business":
-        return "No business description was sent. Please go back and try again.";
-      case "invalid_json":
-        return "The AI service returned invalid JSON. Check the API server logs and try again.";
-      case "empty_response":
-        return "The AI service returned an empty response. Please try again.";
-      case "gemini_request_failed":
-        return "The AI request failed. Check the API server logs and try again.";
-      default:
-        if (status === 404) {
-          return "API server not reachable. Ensure npm run dev:api is running and the Vite proxy is configured.";
-        }
-        if (status && status >= 500) {
-          return "The AI server encountered an error. Please try again.";
-        }
-        return "We could not reach the AI service. Please check the API server and try again.";
-    }
-  };
+  const [expectedProfitInput, setExpectedProfitInput] = useState("");
+  const [maxHedgeCostInput, setMaxHedgeCostInput] = useState("");
+  const [hasPrefilled, setHasPrefilled] = useState(false);
+  const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
 
   useEffect(() => {
+    const storedSnapshot = sessionStorage.getItem("hedgi_snapshot");
+    if (storedSnapshot) {
+      try {
+        const parsed = JSON.parse(storedSnapshot) as SnapshotResult;
+        if (parsed && Array.isArray(parsed.scoredMarkets)) {
+          setSnapshot(parsed);
+          setIsLoading(false);
+          return;
+        }
+        sessionStorage.removeItem("hedgi_snapshot");
+      } catch {
+        sessionStorage.removeItem("hedgi_snapshot");
+      }
+    }
+
     const storedBusiness = sessionStorage.getItem("hedgi_business");
     if (!storedBusiness) {
       navigate("/");
       return;
     }
-    setBusiness(storedBusiness);
-    setError(null);
+
     setIsLoading(true);
+    setError(null);
 
-    const controller = new AbortController();
-
-    const runAnalysis = async () => {
-      try {
-        const response = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ business: storedBusiness }),
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          let code = "analysis_failed";
-          let details = "";
-          try {
-            const payload = (await response.json()) as { error?: string; details?: string };
-            if (payload?.error) code = payload.error;
-            if (payload?.details) details = payload.details;
-          } catch (err) {
-            // Ignore JSON parsing errors and fall back to default message.
-          }
-          const message = getErrorMessage(code, response.status);
-          const fullMessage = details ? `${message} (${details})` : message;
-          throw { message: fullMessage };
-        }
-
-        const data = (await response.json()) as ReturnType<typeof generateMockResults>;
-        setResults(data);
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        const message = typeof err === "object" && err && "message" in err ? String(err.message) : null;
-        setError(message || "We could not reach the AI service. Please check the API server and try again.");
-      } finally {
-        if (!controller.signal.aborted) {
-          setIsLoading(false);
-        }
-      }
-    };
-
-    runAnalysis();
-    return () => controller.abort();
+    runHedgiSnapshot(storedBusiness)
+      .then((result) => {
+        sessionStorage.setItem("hedgi_snapshot", JSON.stringify(result));
+        setSnapshot(result);
+      })
+      .catch((err) => {
+        const code = err instanceof Error ? err.message : "analysis_failed";
+        setError(getErrorMessage(code));
+      })
+      .finally(() => setIsLoading(false));
   }, [navigate]);
+
+  useEffect(() => {
+    if (!snapshot?.inputs || hasPrefilled) return;
+    const { expected_profit, max_hedge_cost } = snapshot.inputs;
+    if (expected_profit !== null && expectedProfitInput.trim() === "") {
+      setExpectedProfitInput(String(expected_profit));
+    }
+    if (max_hedge_cost !== null && maxHedgeCostInput.trim() === "") {
+      setMaxHedgeCostInput(String(max_hedge_cost));
+    }
+    setHasPrefilled(true);
+  }, [snapshot, hasPrefilled, expectedProfitInput, maxHedgeCostInput]);
+
+  useEffect(() => {
+    if (!snapshot?.scoredMarkets.length) return;
+    if (selectedMarketId) return;
+    setSelectedMarketId(snapshot.scoredMarkets[0].ticker);
+  }, [snapshot, selectedMarketId]);
+
+  const topMarkets = useMemo(() => snapshot?.scoredMarkets.slice(0, 10) ?? [], [snapshot]);
+  const expectedProfit = Number(expectedProfitInput);
+  const maxHedgeCost = maxHedgeCostInput.trim() === "" ? null : Number(maxHedgeCostInput);
+  const hedgeInputsValid = Number.isFinite(expectedProfit) && expectedProfit > 0;
+
+  const assumedLossIfEvent = hedgeInputsValid ? expectedProfit * 0.8 : null;
 
   if (isLoading) {
     return (
       <div className="min-h-screen bg-background">
         <Header />
         <main className="pt-32 pb-20 px-6">
-          <div className="container mx-auto max-w-4xl">
-            <div className="text-center">
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                className="w-16 h-16 mx-auto mb-6 rounded-full hedgi-gradient flex items-center justify-center"
-              >
-                <Shield className="w-8 h-8 text-white" />
-              </motion.div>
-              <h2 className="text-2xl font-semibold mb-2">Analyzing your business risks...</h2>
-              <p className="text-muted-foreground">This usually takes a few seconds</p>
-            </div>
+          <div className="container mx-auto max-w-4xl text-center">
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+              className="w-16 h-16 mx-auto mb-6 rounded-full hedgi-gradient flex items-center justify-center"
+            >
+              <Shield className="w-8 h-8 text-white" />
+            </motion.div>
+            <h2 className="text-2xl font-semibold mb-2">Analyzing your business risks...</h2>
+            <p className="text-muted-foreground">This usually takes a few seconds</p>
           </div>
         </main>
       </div>
     );
   }
 
-  if (error) {
+  if (error || !snapshot) {
     return (
       <div className="min-h-screen bg-background">
         <Header />
         <main className="pt-32 pb-20 px-6">
-          <div className="container mx-auto max-w-4xl">
-            <div className="text-center">
-              <h2 className="text-2xl font-semibold mb-2">Analysis failed</h2>
-              <p className="text-muted-foreground mb-6">{error}</p>
-              <Button variant="outline" size="lg" onClick={() => navigate("/")}>
-                Back to Home
-              </Button>
-            </div>
+          <div className="container mx-auto max-w-4xl text-center">
+            <h2 className="text-2xl font-semibold mb-2">Analysis failed</h2>
+            <p className="text-muted-foreground mb-6">
+              {error || "We could not reach the AI service. Please try again."}
+            </p>
+            <Button variant="outline" size="lg" onClick={() => navigate("/")}>
+              Back to Home
+            </Button>
           </div>
         </main>
       </div>
     );
   }
 
-  if (!results) return null;
-
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      
+
       <main className="pt-28 pb-20 px-6">
         <div className="container mx-auto max-w-4xl">
-          {/* Section 1: Business Summary */}
           <motion.section
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -267,14 +165,13 @@ export default function Results() {
               <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
                 <Building2 className="w-5 h-5 text-primary" />
               </div>
-              <div>
-                <h2 className="text-lg font-semibold mb-2">Business Summary</h2>
-                <p className="text-muted-foreground">{results.summary}</p>
+              <div className="w-full">
+                <h2 className="text-lg font-semibold mb-2">Business description</h2>
+                <p className="text-sm text-muted-foreground">{snapshot.businessDescription}</p>
               </div>
             </div>
           </motion.section>
 
-          {/* Section 2: Key External Risks */}
           <motion.section
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -282,33 +179,86 @@ export default function Results() {
             className="hedgi-card p-6 mb-6"
           >
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-destructive/10 flex items-center justify-center">
-                <AlertTriangle className="w-5 h-5 text-destructive" />
+              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                <Tag className="w-5 h-5 text-primary" />
               </div>
-              <h2 className="text-lg font-semibold">Key External Risks</h2>
+              <div>
+                <h2 className="text-lg font-semibold">Search keywords</h2>
+                <p className="text-sm text-muted-foreground">
+                  {snapshot.matches.length} matching markets found in the database
+                </p>
+              </div>
             </div>
-            <div className="space-y-3">
-              {results.risks.map((risk, index) => (
-                <motion.div
-                  key={risk.name}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.3, delay: 0.2 + index * 0.1 }}
-                  className="flex items-center justify-between p-4 bg-secondary/50 rounded-lg"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className={`px-2 py-1 rounded text-xs font-medium uppercase ${getSeverityColor(risk.severity)}`}>
-                      {risk.severity}
-                    </span>
-                    <span className="font-medium">{risk.name}</span>
-                  </div>
-                  <span className="text-sm text-muted-foreground">{risk.impact}</span>
-                </motion.div>
-              ))}
+            {snapshot.keywords.length ? (
+              <div className="flex flex-wrap gap-2">
+                {snapshot.keywords.map((keyword) => (
+                  <span
+                    key={keyword}
+                    className="text-xs px-3 py-1 rounded-full bg-secondary text-secondary-foreground"
+                  >
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No keywords returned yet.</p>
+            )}
+          </motion.section>
+
+          <motion.section
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.15 }}
+            className="hedgi-card p-6 mb-6"
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                <Signal className="w-5 h-5 text-primary" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold">Hedge calculator</h2>
+                <p className="text-sm text-muted-foreground">
+                  Pick a market to see its hedge impact using a simple assumption.
+                </p>
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground space-y-1 mb-4">
+              <p>We’ll assume the risk event wipes out 80% of your profit for this demo.</p>
+              <p>Enter your expected profit if nothing goes wrong, then pick a market to see the hedge.</p>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4 text-sm">
+              <label className="space-y-1">
+                <span className="text-muted-foreground">Expected Profit (USD)</span>
+                <span className="block text-[11px] text-muted-foreground/80">
+                  Profit if the season goes normally.
+                </span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  value={expectedProfitInput}
+                  onChange={(event) => setExpectedProfitInput(event.target.value)}
+                  placeholder="e.g., 250000"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-muted-foreground">Max Hedge Cost (USD, optional)</span>
+                <span className="block text-[11px] text-muted-foreground/80">
+                  Optional budget cap for buying contracts.
+                </span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  value={maxHedgeCostInput}
+                  onChange={(event) => setMaxHedgeCostInput(event.target.value)}
+                  placeholder="e.g., 10000"
+                />
+              </label>
             </div>
           </motion.section>
 
-          {/* Section 3: Loss Scenarios */}
           <motion.section
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -316,127 +266,169 @@ export default function Results() {
             className="hedgi-card p-6 mb-6"
           >
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-warning/10 flex items-center justify-center">
-                <TrendingDown className="w-5 h-5 text-warning" />
-              </div>
-              <h2 className="text-lg font-semibold">Loss Scenarios</h2>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="p-4 bg-secondary/50 rounded-lg text-center">
-                <p className="text-sm text-muted-foreground mb-1">Revenue at Risk</p>
-                <p className="text-2xl font-bold text-foreground">{results.lossScenario.revenueAtRisk}</p>
-              </div>
-              <div className="p-4 bg-destructive/10 rounded-lg text-center">
-                <p className="text-sm text-muted-foreground mb-1">Worst-Case Loss</p>
-                <p className="text-2xl font-bold text-destructive">{results.lossScenario.worstCase}</p>
-              </div>
-              <div className="p-4 bg-secondary/50 rounded-lg text-center">
-                <p className="text-sm text-muted-foreground mb-1">Likelihood</p>
-                <p className="text-2xl font-bold text-foreground">{results.lossScenario.likelihood}</p>
-              </div>
-              <div className="p-4 bg-secondary/50 rounded-lg text-center">
-                <p className="text-sm text-muted-foreground mb-1">Timeframe</p>
-                <p className="text-2xl font-bold text-foreground">{results.lossScenario.timeframe}</p>
-              </div>
-            </div>
-          </motion.section>
-
-          {/* Section 4: With vs Without Hedging */}
-          <motion.section
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.3 }}
-            className="hedgi-card p-6 mb-6"
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-success/10 flex items-center justify-center">
-                <Shield className="w-5 h-5 text-success" />
-              </div>
-              <h2 className="text-lg font-semibold">With vs Without Protection</h2>
-            </div>
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="p-5 border border-destructive/30 bg-destructive/5 rounded-xl">
-                <div className="flex items-center gap-2 mb-3">
-                  <XCircle className="w-5 h-5 text-destructive" />
-                  <span className="font-medium">Without Protection</span>
-                </div>
-                <p className="text-2xl font-bold text-destructive">{results.hedging.unprotected}</p>
-              </div>
-              <div className="p-5 border border-success/30 bg-success/5 rounded-xl">
-                <div className="flex items-center gap-2 mb-3">
-                  <CheckCircle className="w-5 h-5 text-success" />
-                  <span className="font-medium">With Hedgi Protection</span>
-                </div>
-                <p className="text-2xl font-bold text-success">{results.hedging.protected}</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {results.hedging.reduction} risk reduction
-                </p>
-              </div>
-            </div>
-          </motion.section>
-
-          {/* Section 5: Market Signal Explanation */}
-          <motion.section
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.4 }}
-            className="hedgi-card p-6 mb-8"
-          >
-            <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
                 <Signal className="w-5 h-5 text-primary" />
               </div>
               <div>
-                <h2 className="text-lg font-semibold">Market Signals</h2>
-                <p className="text-sm text-muted-foreground">
-                  Hedgi aggregates public event-based signals to track your risk exposure
-                </p>
+                <h2 className="text-lg font-semibold">Signals</h2>
+                <p className="text-sm text-muted-foreground">Top ranked markets</p>
               </div>
             </div>
-            <div className="space-y-3">
-              {results.signals.map((signal, index) => (
-                <div
-                  key={signal.name}
-                  className="flex items-center justify-between p-4 bg-secondary/50 rounded-lg"
-                >
-                  <div className="flex items-center gap-3">
-                    <Signal className={`w-4 h-4 ${getSignalColor(signal.strength)}`} />
-                    <div>
-                      <span className="font-medium">{signal.name}</span>
-                      <p className="text-sm text-muted-foreground">{signal.description}</p>
+
+            {topMarkets.length ? (
+              <div className="space-y-3">
+                {topMarkets.map((market) => {
+                  const priceYesRaw =
+                    typeof market.price_yes === "number"
+                      ? market.price_yes
+                      : getFallbackYesPrice(market.market_ticker || market.ticker);
+                  const priceYesNormalized =
+                    priceYesRaw !== null
+                      ? priceYesRaw > 1
+                        ? priceYesRaw / 100
+                        : priceYesRaw
+                      : null;
+                  const hasValidPrice =
+                    priceYesNormalized !== null &&
+                    priceYesNormalized > 0 &&
+                    priceYesNormalized < 1;
+                  const isSelected = selectedMarketId === market.ticker;
+                  const quote =
+                    isSelected && hedgeInputsValid && hasValidPrice && assumedLossIfEvent !== null
+                      ? (() => {
+                          try {
+                            return computeHedgeQuote({
+                              market_id: market.market_ticker || market.ticker,
+                              price_yes: priceYesNormalized,
+                              expected_profit: expectedProfit,
+                              loss_if_event: assumedLossIfEvent,
+                              hedge_coverage: 1,
+                              max_hedge_cost: maxHedgeCost,
+                            });
+                          } catch {
+                            return null;
+                          }
+                        })()
+                      : null;
+                  return (
+                    <div
+                      key={market.ticker}
+                      className={`flex items-start justify-between gap-4 p-4 rounded-lg border ${
+                        isSelected
+                          ? "bg-secondary/70 border-primary/40"
+                          : "bg-secondary/50 border-transparent"
+                      }`}
+                    >
+                      <div>
+                        <p className="font-medium">{market.title}</p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground">
+                            {market.platform.toUpperCase()}
+                          </span>
+                          <span>{market.ticker}</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{market.reasoning}</p>
+                        {priceYesNormalized !== null ? (
+                          <p className="text-xs text-muted-foreground">
+                            YES price: {(priceYesNormalized * 100).toFixed(1)}% (
+                            {formatCurrency(priceYesNormalized)} per contract)
+                          </p>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">YES price unavailable</p>
+                        )}
+                        {isSelected ? (
+                          <div className="mt-2 text-xs text-muted-foreground space-y-1">
+                            <p>
+                              Assumed loss if event:{" "}
+                              {assumedLossIfEvent !== null
+                                ? formatCurrency(assumedLossIfEvent)
+                                : "-"}
+                            </p>
+                            {quote ? (
+                              <>
+                                <p>
+                                  Contracts: {quote.contracts_to_buy} · Cost:{" "}
+                                  {formatCurrency(quote.total_cost)}
+                                </p>
+                                <p>
+                                  Profit if event: {formatCurrency(quote.profit_if_event)} · If no
+                                  event: {formatCurrency(quote.profit_if_no_event)}
+                                </p>
+                                <p>
+                                  Risk managed: {(quote.coverage_achieved * 100).toFixed(1)}% of
+                                  the assumed loss
+                                </p>
+                              </>
+                            ) : (
+                              <p>Enter expected profit to estimate hedge impact.</p>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="mt-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setSelectedMarketId(market.ticker)}
+                            >
+                              Calculate this hedge
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-right text-xs text-muted-foreground">
+                        <p className="font-medium text-foreground">
+                          Overall {formatScore(market.overall_score)}
+                        </p>
+                        <p>Relevance: {formatScore(market.relevance_score)}</p>
+                        <p>Hedging: {formatScore(market.hedging_utility_score)}</p>
+                        <p>Timing: {formatScore(market.timing_score)}</p>
+                      </div>
                     </div>
-                  </div>
-                  <span className={`text-sm font-medium capitalize ${getSignalColor(signal.strength)}`}>
-                    {signal.strength} proxy
-                  </span>
-                </div>
-              ))}
-            </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No scored markets returned. Try a broader description or a different risk focus.
+              </p>
+            )}
           </motion.section>
 
-          {/* CTA Section */}
+          <details className="hedgi-card p-6 mb-8">
+            <summary className="cursor-pointer font-medium">Debug</summary>
+            <div className="mt-4 space-y-2 text-sm text-muted-foreground">
+              <p>Keywords: {snapshot.keywords.join(", ") || "-"}</p>
+              <p>Match count: {snapshot.matches.length}</p>
+              <p>Score count: {snapshot.scoredMarkets.length}</p>
+              <p>
+                Gemini inputs:{" "}
+                {snapshot.inputs
+                  ? JSON.stringify(snapshot.inputs)
+                  : "none"}
+              </p>
+            </div>
+          </details>
+
           <motion.section
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.5 }}
+            transition={{ duration: 0.5, delay: 0.3 }}
             className="hedgi-card p-8 text-center hedgi-shadow-glow"
           >
             <h2 className="text-2xl font-bold mb-3">Track this risk over time</h2>
             <p className="text-muted-foreground mb-6 max-w-lg mx-auto">
-              Create a free Hedgi account to monitor these risks, receive alerts when conditions change, 
+              Create a free Hedgi account to monitor these risks, receive alerts when conditions change,
               and explore protection options.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
               <Button variant="hero" size="xl" asChild>
                 <Link to="/signup" className="gap-2">
                   Create Free Account
-                  <ArrowRight className="w-5 h-5" />
+                  <ChevronRight className="w-5 h-5" />
                 </Link>
               </Button>
               <Button variant="outline" size="lg" asChild>
-                <Link to="/login">
-                  Sign In
-                </Link>
+                <Link to="/login">Sign In</Link>
               </Button>
             </div>
           </motion.section>

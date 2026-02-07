@@ -45,13 +45,6 @@ export const CATEGORY_DEFINITIONS: CategoryDefinition[] = [
     defaultRegionBehavior: "seasonal",
   },
   {
-    id: "sports",
-    label: "Sports & Events",
-    keywords: ["stadium", "tickets", "league", "season", "playoffs", "team", "event", "attendance"],
-    notes: "Attendance and broadcast factors drive revenue shifts.",
-    defaultRegionBehavior: "seasonal",
-  },
-  {
     id: "finance",
     label: "Rates & Macro",
     keywords: ["interest", "inflation", "cpi", "rates", "recession", "credit", "fed", "yield"],
