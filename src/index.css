@@ -1,0 +1,152 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 217 91% 22%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 20% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 210 20% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 166 72% 40%;
+    --accent-foreground: 210 40% 98%;
+
+    --success: 158 64% 42%;
+    --success-foreground: 210 40% 98%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 222 47% 11%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 217 91% 22%;
+
+    --radius: 0.75rem;
+
+    /* Custom Hedgi tokens */
+    --hedgi-gradient: linear-gradient(135deg, hsl(217 91% 22%) 0%, hsl(200 80% 30%) 50%, hsl(166 72% 40%) 100%);
+    --hedgi-gradient-subtle: linear-gradient(135deg, hsl(210 20% 98%) 0%, hsl(200 30% 95%) 100%);
+    --hedgi-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --hedgi-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --hedgi-shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    --hedgi-shadow-glow: 0 0 40px rgba(45, 90, 180, 0.15);
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 47% 8%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 200 80% 55%;
+    --primary-foreground: 222 47% 6%;
+
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 166 72% 45%;
+    --accent-foreground: 222 47% 6%;
+
+    --success: 158 64% 42%;
+    --success-foreground: 222 47% 6%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 222 47% 6%;
+
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 200 80% 55%;
+
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}
+
+@layer utilities {
+  .hedgi-gradient {
+    background: var(--hedgi-gradient);
+  }
+
+  .hedgi-gradient-text {
+    background: var(--hedgi-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hedgi-shadow {
+    box-shadow: var(--hedgi-shadow);
+  }
+
+  .hedgi-shadow-lg {
+    box-shadow: var(--hedgi-shadow-lg);
+  }
+
+  .hedgi-shadow-glow {
+    box-shadow: var(--hedgi-shadow-glow);
+  }
+
+  .hedgi-card {
+    @apply bg-card rounded-xl border border-border;
+    box-shadow: var(--hedgi-shadow);
+  }
+
+  .hedgi-input {
+    @apply bg-background border border-border rounded-xl px-6 py-4 text-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all;
+  }
+}
