@@ -3,6 +3,15 @@ export type BusinessProfile = {
   industry: string | null;
   location: string | null;
   region: string | null;
+  seasonality: string | null;
+  revenueDrivers: string[];
+  keyCosts: string[];
+  assumptions: Array<{
+    field: string;
+    value: string;
+    confidence: number;
+    basis: string;
+  }>;
   revenueSeason: {
     startMonth: number | null;
     endMonth: number | null;
@@ -56,6 +65,14 @@ export type RankedSignal = {
   relevanceScore: number;
   proxyStrength: "strong" | "partial" | "weak";
   signalScore: number;
+  mappedRisk: string;
+  rationale: string;
+};
+
+export type RankedSignalPartial = {
+  marketId: string;
+  relevanceScore: number;
+  proxyStrength: "strong" | "partial" | "weak";
   mappedRisk: string;
   rationale: string;
 };

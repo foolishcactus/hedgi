@@ -4,6 +4,7 @@ import type {
   CategoryMatch,
   Market,
   RankedSignal,
+  RankedSignalPartial,
 } from "@/types/hedgi";
 import { CATEGORY_DEFINITIONS, inferCategoriesFromProfile } from "@/lib/categories";
 import { fetchActiveMarketsByCategories as fetchKalshiMarkets } from "@/lib/providers/kalshi.mock";
@@ -146,10 +147,133 @@ const mockExtractBusinessProfile = (input: string): BusinessProfile => {
     industry,
     location,
     region,
+    seasonality: revenueSeason?.notes ?? null,
+    revenueDrivers: [],
+    keyCosts: [],
+    assumptions: [],
     revenueSeason,
     exposures,
     keywords,
   };
+};
+
+const postJson = async <T>(path: string, payload: unknown): Promise<T> => {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`api_error_${response.status}`);
+  }
+
+  return (await response.json()) as T;
+};
+
+type GeminiProfilePayload = {
+  industry: string | null;
+  location: string | null;
+  seasonality: string | null;
+  revenueDrivers: string[];
+  keyCosts: string[];
+  assumptions: Array<{
+    field: string;
+    value: string;
+    confidence: number;
+    basis: string;
+  }>;
+};
+
+const sanitizeStringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : [];
+
+const extractBusinessProfileWithGemini = async (input: string): Promise<BusinessProfile> => {
+  const payload = await postJson<GeminiProfilePayload>("/api/profile", { input });
+  const base = mockExtractBusinessProfile(input);
+
+  return {
+    ...base,
+    industry: payload.industry ?? base.industry,
+    location: payload.location ?? base.location,
+    seasonality: payload.seasonality ?? base.seasonality,
+    revenueDrivers: sanitizeStringArray(payload.revenueDrivers),
+    keyCosts: sanitizeStringArray(payload.keyCosts),
+    assumptions: Array.isArray(payload.assumptions)
+      ? payload.assumptions
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({
+            field: typeof item.field === "string" ? item.field : "",
+            value: typeof item.value === "string" ? item.value : "",
+            confidence: typeof item.confidence === "number" ? item.confidence : 0.5,
+            basis: typeof item.basis === "string" ? item.basis : "",
+          }))
+          .filter((item) => item.field || item.value || item.basis)
+      : [],
+  };
+};
+
+type GeminiRankedResponse = Array<{
+  marketId?: string;
+  id?: string;
+  relevanceScore?: number;
+  proxyStrength?: "strong" | "partial" | "weak";
+  mappedRisk?: string;
+  rationale?: string;
+}>;
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
+
+const rankMarketsWithGemini = async (
+  profile: BusinessProfile,
+  markets: Market[],
+): Promise<RankedSignalPartial[]> => {
+  const profilePayload = {
+    industry: profile.industry,
+    location: profile.location,
+    seasonality: profile.seasonality,
+    revenueDrivers: profile.revenueDrivers,
+    keyCosts: profile.keyCosts,
+    assumptions: profile.assumptions,
+  };
+
+  const marketsPayload = markets.map((market) => ({
+    id: market.id,
+    title: market.title,
+    description: market.description ?? "",
+    closeTime: market.closeTime,
+    categoryTags: [market.categoryId],
+    regionTags: profile.region ? [profile.region] : [],
+  }));
+
+  const payload = { profile: profilePayload, markets: marketsPayload };
+  const response = await postJson<GeminiRankedResponse>("/api/rank-markets", payload);
+
+  const byId = new Map<string, RankedSignalPartial>();
+  for (const item of response) {
+    const id = item.marketId ?? item.id ?? "";
+    if (!id) continue;
+    const relevanceScore = typeof item.relevanceScore === "number" ? item.relevanceScore : 0;
+    const proxyStrength = item.proxyStrength ?? "weak";
+    const mappedRisk = typeof item.mappedRisk === "string" ? item.mappedRisk : "market risk";
+    const rationale = typeof item.rationale === "string" ? item.rationale : "";
+
+    byId.set(id, {
+      marketId: id,
+      relevanceScore: clamp(relevanceScore, 0, 100),
+      proxyStrength,
+      mappedRisk,
+      rationale: rationale.slice(0, 140),
+    });
+  }
+
+  return Array.from(byId.values());
 };
 
 const normalizeTitle = (value: string) =>
@@ -231,7 +355,9 @@ const mappedRiskFromProfile = (profile: BusinessProfile, categoryId: CategoryId)
 };
 
 export const buildRankedSignals = async (input: string): Promise<RankedSignal[]> => {
-  const profile = mockExtractBusinessProfile(input);
+  const profile = await extractBusinessProfileWithGemini(input).catch(() =>
+    mockExtractBusinessProfile(input),
+  );
   const categoryMatches = inferCategoriesFromProfile(profile);
   const topCategories = categoryMatches.slice(0, 3).map((match) => match.id);
 
@@ -242,19 +368,31 @@ export const buildRankedSignals = async (input: string): Promise<RankedSignal[]>
 
   const filteredMarkets = hygieneFilter([...kalshiMarkets, ...polymarketMarkets]);
 
+  const geminiRanked = await rankMarketsWithGemini(profile, filteredMarkets).catch(() => []);
+  const geminiMap = new Map(geminiRanked.map((item) => [item.marketId, item]));
+
   const ranked = filteredMarkets.map((market) => {
-    const relevance = relevanceScoreStub(profile, market, categoryMatches);
+    const geminiItem = geminiMap.get(market.id);
+    const relevance = geminiItem
+      ? clamp(geminiItem.relevanceScore / 100, 0, 1)
+      : relevanceScoreStub(profile, market, categoryMatches);
     const liquidity = liquidityScore(market);
     const timeScore = timeAlignmentScore(market);
     const signalScore = relevance * 0.6 + liquidity * 0.25 + timeScore * 0.15;
-    const proxyStrength = proxyStrengthFromRelevance(relevance);
-    const mappedRisk = mappedRiskFromProfile(profile, market.categoryId);
+    const proxyStrength = geminiItem
+      ? geminiItem.proxyStrength
+      : proxyStrengthFromRelevance(relevance);
+    const mappedRisk = geminiItem
+      ? geminiItem.mappedRisk
+      : mappedRiskFromProfile(profile, market.categoryId);
 
-    const rationale = [
-      `Relevance ${relevance.toFixed(2)}`,
-      `Liquidity ${liquidity.toFixed(2)}`,
-      `Time ${timeScore.toFixed(2)}`,
-    ].join(" | ");
+    const rationale = geminiItem?.rationale?.length
+      ? geminiItem.rationale
+      : [
+          `Relevance ${relevance.toFixed(2)}`,
+          `Liquidity ${liquidity.toFixed(2)}`,
+          `Time ${timeScore.toFixed(2)}`,
+        ].join(" | ");
 
     return {
       market,
@@ -278,8 +416,12 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
     globalWindow.hedgiPipelineTest = async () => {
       const input =
         "I run a small orange farm in central Florida. Revenue Sep-Nov. Hurricanes and heavy rain can wipe out yields.";
+      const profile = await extractBusinessProfileWithGemini(input).catch(() =>
+        mockExtractBusinessProfile(input),
+      );
+      console.log("Gemini profile:", profile);
       const result = await buildRankedSignals(input);
-      console.log(result);
+      console.log("Top 10 signals:", result.slice(0, 10));
     };
   }
 }

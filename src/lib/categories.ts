@@ -90,6 +90,14 @@ export const inferCategoriesFromProfile = (profile: BusinessProfile): CategoryMa
   const baseKeywords = new Set<string>();
   if (profile.industry) baseKeywords.add(normalize(profile.industry));
   if (profile.location) baseKeywords.add(normalize(profile.location));
+  if (profile.seasonality) baseKeywords.add(normalize(profile.seasonality));
+  profile.revenueDrivers.forEach((driver) => baseKeywords.add(normalize(driver)));
+  profile.keyCosts.forEach((cost) => baseKeywords.add(normalize(cost)));
+  profile.assumptions.forEach((assumption) => {
+    baseKeywords.add(normalize(assumption.field));
+    baseKeywords.add(normalize(assumption.value));
+    baseKeywords.add(normalize(assumption.basis));
+  });
   profile.keywords.forEach((keyword) => baseKeywords.add(normalize(keyword)));
   profile.exposures.forEach((risk) => baseKeywords.add(normalize(risk)));
 

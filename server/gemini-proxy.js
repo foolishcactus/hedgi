@@ -5,12 +5,19 @@ import { GoogleGenAI } from "@google/genai";
 const MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 const PORT = Number(process.env.GEMINI_PROXY_PORT || process.env.PORT || 3001);
 const getApiKey = () => process.env.GEMINI_API_KEY;
-const ai = new GoogleGenAI({ apiKey: getApiKey() });
 
-const sendJson = (res, status, payload) => {
+const allowOrigin = (origin) => {
+  if (!origin) return "*";
+  if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) {
+    return origin;
+  }
+  return "*";
+};
+
+const sendJson = (res, status, payload, origin) => {
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": allowOrigin(origin),
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, x-goog-api-key",
   });
@@ -21,7 +28,7 @@ const readJsonBody = async (req) => {
   let raw = "";
   for await (const chunk of req) {
     raw += chunk;
-    if (raw.length > 100_000) {
+    if (raw.length > 150_000) {
       throw new Error("payload_too_large");
     }
   }
@@ -29,130 +36,94 @@ const readJsonBody = async (req) => {
   return JSON.parse(raw);
 };
 
-const parseGeminiJson = (outputText) => {
-  const cleaned = outputText
+const normalizeJsonText = (text) => {
+  const cleaned = text
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/```$/i, "")
     .trim();
 
-  const escapeNewlinesInStrings = (text) => {
-    let result = "";
-    let inString = false;
-    let escaped = false;
+  let result = "";
+  let inString = false;
+  let escaped = false;
 
-    for (let i = 0; i < text.length; i += 1) {
-      const char = text[i];
+  for (let i = 0; i < cleaned.length; i += 1) {
+    const char = cleaned[i];
 
-      if (inString) {
-        if (escaped) {
-          result += char;
-          escaped = false;
-          continue;
-        }
-
-        if (char === "\\") {
-          result += char;
-          escaped = true;
-          continue;
-        }
-
-        if (char === "\"") {
-          result += char;
-          inString = false;
-          continue;
-        }
-
-        if (char === "\n") {
-          result += "\\n";
-          continue;
-        }
-
-        if (char === "\r") {
-          if (text[i + 1] === "\n") i += 1;
-          result += "\\n";
-          continue;
-        }
-
+    if (inString) {
+      if (escaped) {
         result += char;
+        escaped = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        result += char;
+        escaped = true;
         continue;
       }
 
       if (char === "\"") {
         result += char;
-        inString = true;
+        inString = false;
+        continue;
+      }
+
+      if (char === "\n") {
+        result += "\\n";
+        continue;
+      }
+
+      if (char === "\r") {
+        if (cleaned[i + 1] === "\n") i += 1;
+        result += "\\n";
         continue;
       }
 
       result += char;
+      continue;
     }
 
-    return result;
-  };
+    if (char === "\"") {
+      result += char;
+      inString = true;
+      continue;
+    }
 
-  const normalized = escapeNewlinesInStrings(cleaned);
+    result += char;
+  }
 
-  const tryParse = (text) => {
+  return result;
+};
+
+const parseGeminiJson = (text) => {
+  const normalized = normalizeJsonText(text);
+  const tryParse = (value) => {
     try {
-      return JSON.parse(text);
+      return JSON.parse(value);
     } catch {
       return null;
     }
   };
 
-  const extractLastJsonObject = (text) => {
-    let inString = false;
-    let escaped = false;
-    let depth = 0;
-    let start = -1;
-    let last = null;
-
-    for (let i = 0; i < text.length; i += 1) {
-      const char = text[i];
-
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (char === "\\") {
-          escaped = true;
-          continue;
-        }
-        if (char === "\"") {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (char === "\"") {
-        inString = true;
-        continue;
-      }
-
-      if (char === "{") {
-        if (depth === 0) start = i;
-        depth += 1;
-        continue;
-      }
-
-      if (char === "}") {
-        if (depth > 0) depth -= 1;
-        if (depth === 0 && start !== -1) {
-          last = text.slice(start, i + 1);
-          start = -1;
-        }
-      }
-    }
-
-    return last;
-  };
-
   let parsed = tryParse(normalized);
+
   if (!parsed) {
-    const extracted = extractLastJsonObject(normalized);
-    if (extracted) {
-      parsed = tryParse(extracted);
+    const firstBrace = normalized.indexOf("{");
+    const firstBracket = normalized.indexOf("[");
+    const start =
+      firstBrace === -1
+        ? firstBracket
+        : firstBracket === -1
+          ? firstBrace
+          : Math.min(firstBrace, firstBracket);
+
+    const lastBrace = normalized.lastIndexOf("}");
+    const lastBracket = normalized.lastIndexOf("]");
+    const end = Math.max(lastBrace, lastBracket);
+
+    if (start !== -1 && end > start) {
+      parsed = tryParse(normalized.slice(start, end + 1));
     }
   }
 
@@ -160,90 +131,185 @@ const parseGeminiJson = (outputText) => {
     parsed = tryParse(parsed) || parsed;
   }
 
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-
-  return parsed;
+  return parsed ?? null;
 };
 
+const sanitizeStringArray = (value) =>
+  Array.isArray(value)
+    ? value
+        .filter((item) => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : [];
+
+const sanitizeProfile = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+
+  const assumptions = Array.isArray(raw.assumptions)
+    ? raw.assumptions
+        .filter((item) => item && typeof item === "object")
+        .map((item) => ({
+          field: typeof item.field === "string" ? item.field : "",
+          value: typeof item.value === "string" ? item.value : "",
+          confidence: typeof item.confidence === "number" ? item.confidence : 0.5,
+          basis: typeof item.basis === "string" ? item.basis : "",
+        }))
+        .filter((item) => item.field || item.value || item.basis)
+    : [];
+
+  return {
+    industry: typeof raw.industry === "string" ? raw.industry : null,
+    location: typeof raw.location === "string" ? raw.location : null,
+    seasonality: typeof raw.seasonality === "string" ? raw.seasonality : null,
+    revenueDrivers: sanitizeStringArray(raw.revenueDrivers),
+    keyCosts: sanitizeStringArray(raw.keyCosts),
+    assumptions,
+  };
+};
+
+const sanitizeRankings = (raw, allowedIds) => {
+  if (!Array.isArray(raw)) return [];
+  const allowed = new Set(allowedIds);
+  const results = [];
+
+  for (const item of raw) {
+    const id = typeof item.id === "string" ? item.id : typeof item.marketId === "string" ? item.marketId : "";
+    if (!id || !allowed.has(id)) continue;
+
+    const relevance = typeof item.relevanceScore === "number" ? item.relevanceScore : 0;
+    const proxyStrength = ["strong", "partial", "weak"].includes(item.proxyStrength)
+      ? item.proxyStrength
+      : "weak";
+
+    const mappedRisk = typeof item.mappedRisk === "string" ? item.mappedRisk : "market risk";
+    const rationale = typeof item.rationale === "string" ? item.rationale.slice(0, 140) : "";
+
+    results.push({
+      marketId: id,
+      relevanceScore: Math.max(0, Math.min(100, relevance)),
+      proxyStrength,
+      mappedRisk,
+      rationale,
+    });
+  }
+
+  return results;
+};
+
+const buildProfilePrompt = (input) =>
+  [
+    "Extract a BusinessProfile from the text.",
+    "Return ONLY JSON with these fields:",
+    "industry (string|null), location (string|null), seasonality (string|null),",
+    "revenueDrivers (string[]), keyCosts (string[]),",
+    "assumptions (array of {field, value, confidence 0-1, basis}).",
+    "No extra commentary and no code fences.",
+    "Text:",
+    input,
+  ].join(" ");
+
+const buildRankPrompt = (profileSummary, markets) =>
+  [
+    "You are ranking market relevance for the business profile.",
+    "Return ONLY a JSON array of objects:",
+    "{id, relevanceScore 0-100, proxyStrength strong|partial|weak, mappedRisk, rationale <= 140 chars}.",
+    "Use the market id provided.",
+    "No extra commentary and no code fences.",
+    `Profile: ${JSON.stringify(profileSummary)}`,
+    `Markets: ${JSON.stringify(markets)}`,
+  ].join(" ");
+
 const server = http.createServer(async (req, res) => {
+  const origin = req.headers.origin;
+
   try {
     if (req.method === "OPTIONS") {
-      sendJson(res, 204, {});
-      return;
-    }
-
-    if (req.url !== "/api/analyze") {
-      sendJson(res, 404, { error: "not_found" });
+      sendJson(res, 204, {}, origin);
       return;
     }
 
     if (req.method !== "POST") {
-      sendJson(res, 405, { error: "method_not_allowed" });
+      sendJson(res, 405, { error: "method_not_allowed" }, origin);
       return;
     }
 
     const apiKey = getApiKey();
     if (!apiKey) {
-      sendJson(res, 500, { error: "missing_api_key" });
+      sendJson(res, 500, { error: "missing_api_key" }, origin);
       return;
     }
+    const ai = new GoogleGenAI({ apiKey });
 
     const body = await readJsonBody(req);
-    const business = typeof body.business === "string" ? body.business.trim() : "";
 
-    if (!business) {
-      sendJson(res, 400, { error: "missing_business" });
-      return;
-    }
+    if (req.url === "/api/profile") {
+      const input = typeof body.input === "string" ? body.input.trim() : "";
+      if (!input) {
+        sendJson(res, 400, { error: "missing_input" }, origin);
+        return;
+      }
 
-    const schemaHint =
-      "Return a JSON object with keys: summary (string), " +
-      "risks (array of 3-6 objects with name, severity: low|medium|high, impact), " +
-      "lossScenario (object with revenueAtRisk, worstCase, likelihood, timeframe), " +
-      "hedging (object with unprotected, protected, reduction), " +
-      "signals (array of 2-5 objects with name, strength: weak|partial|strong, description).";
-
-    const basePrompt =
-      "You are a risk analyst. Summarize external risks and market signals for the business described. " +
-      `${schemaHint} ` +
-      "Return only JSON with no extra commentary and no code fences. " +
-      "Do not include newline characters inside string values; keep all strings on a single line. " +
-      "Use USD with $ and commas when describing money. Keep the summary concise (2-4 sentences).";
-
-    const runModel = async (promptText) => {
       const response = await ai.models.generateContent({
         model: MODEL,
-        contents: `${promptText}\n\nBusiness description:\n${business}`,
+        contents: buildProfilePrompt(input),
       });
-      return typeof response?.text === "string" ? response.text.trim() : "";
-    };
 
-    let outputText = await runModel(basePrompt);
-    if (!outputText) {
-      sendJson(res, 502, { error: "empty_response" });
+      const text = typeof response?.text === "string" ? response.text.trim() : "";
+      if (!text) {
+        sendJson(res, 502, { error: "empty_response" }, origin);
+        return;
+      }
+
+      const parsed = parseGeminiJson(text);
+      const profile = sanitizeProfile(parsed);
+      if (!profile) {
+        console.error("Invalid profile JSON:", JSON.stringify(text));
+        sendJson(res, 502, { error: "invalid_json" }, origin);
+        return;
+      }
+
+      sendJson(res, 200, profile, origin);
       return;
     }
 
-    let parsed = parseGeminiJson(outputText);
-    if (!parsed) {
-      const retryPrompt = `${basePrompt} Output MUST be a single-line JSON object under 1200 characters.`;
-      outputText = await runModel(retryPrompt);
-      parsed = outputText ? parseGeminiJson(outputText) : null;
-    }
+    if (req.url === "/api/rank-markets") {
+      const profile = body.profile ?? null;
+      const markets = Array.isArray(body.markets) ? body.markets : [];
 
-    if (!parsed) {
-      console.error("Invalid JSON output from Gemini:", JSON.stringify(outputText));
-      sendJson(res, 502, { error: "invalid_json" });
+      if (!profile || markets.length === 0) {
+        sendJson(res, 400, { error: "missing_payload" }, origin);
+        return;
+      }
+
+      const response = await ai.models.generateContent({
+        model: MODEL,
+        contents: buildRankPrompt(profile, markets),
+      });
+
+      const text = typeof response?.text === "string" ? response.text.trim() : "";
+      if (!text) {
+        sendJson(res, 502, { error: "empty_response" }, origin);
+        return;
+      }
+
+      const parsed = parseGeminiJson(text);
+      const ranked = sanitizeRankings(parsed, markets.map((market) => market.id));
+
+      if (!ranked.length) {
+        console.error("Invalid rank JSON:", JSON.stringify(text));
+        sendJson(res, 502, { error: "invalid_json" }, origin);
+        return;
+      }
+
+      sendJson(res, 200, ranked, origin);
       return;
     }
 
-    sendJson(res, 200, parsed);
+    sendJson(res, 404, { error: "not_found" }, origin);
   } catch (err) {
     const message = err instanceof Error ? err.message : "server_error";
-    console.error("Proxy error:", message);
-    sendJson(res, 500, { error: "server_error", details: message });
+    console.error("Server error:", message);
+    sendJson(res, 500, { error: "server_error", details: message }, origin);
   }
 });
 
